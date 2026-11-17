@@ -110,6 +110,17 @@ input[type=checkbox]{width:auto;margin:0 6px 0 0}
 .taxi .big{font-family:"Hiragino Sans","Noto Sans JP",sans-serif;font-weight:700;font-size:30px;line-height:1.35;margin:auto 0}
 .taxi .big small{display:block;font-size:20px;font-weight:600;margin-top:14px}
 .taxi .en{color:var(--muted);font-size:14px}
+/* QR codes (Visit Japan Web etc.): always black on white so scanners read them, even in dark mode */
+.qr{position:fixed;inset:0;background:#fff;color:#111;z-index:50;display:none;flex-direction:column;align-items:center;padding:calc(18px + env(safe-area-inset-top)) 18px calc(18px + env(safe-area-inset-bottom))}
+.qr.on{display:flex}
+.qr .qt{font-weight:700;font-size:17px;text-align:center}
+.qr .qs{font-size:13px;color:#555;text-align:center;margin-top:2px}
+.qr img{width:min(88vw,58vh);height:auto;image-rendering:pixelated;margin:auto 0;background:#fff}
+.qr .qn{font-weight:700;font-size:22px;letter-spacing:.02em;margin-bottom:12px}
+.qr .row{justify-content:center;margin-bottom:12px}
+.qr .tag{font-size:15px;padding:8px 16px;background:#f1f1f1;color:#111;border-color:#ccc}
+.qr .tag.sel{background:#111;color:#fff;border-color:#111}
+.qr .btn{width:100%;max-width:420px;padding:14px}
 nav{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom));display:flex;justify-content:space-around;z-index:20}
 nav button{flex:1;background:none;border:0;font:inherit;font-size:11px;color:var(--muted);padding:5px 0;cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px}
 nav button svg{width:22px;height:22px}
@@ -138,6 +149,7 @@ nav button.on{color:var(--red);font-weight:700}
   </section>
   <section class="view" id="v-more">
     <h2>Sync</h2><div class="card" id="conn"></div>
+    <div id="qr-wrap" style="display:none"></div>
     <div id="todo-wrap"><h2 id="h-todo">Before you go</h2><div class="card"><ul class="check" id="todo"></ul></div></div>
     <div id="arrival-wrap"><h2 id="h-arrival">Arrival</h2><div class="card"><ol class="steps" id="arrival"></ol></div></div>
     <div id="info-wrap"><h2>Good to know</h2><div class="card"><dl class="kv" style="margin:0" id="info"></dl></div></div>
@@ -153,6 +165,13 @@ nav button.on{color:var(--red);font-weight:700}
 <div class="taxi" id="taxi" role="dialog" aria-modal="true">
   <div class="en" id="taxi-en"></div><div class="big" id="taxi-jp"></div>
   <button class="btn primary" id="taxi-close" style="padding:14px">Close</button>
+</div>
+<div class="qr" id="qr" role="dialog" aria-modal="true">
+  <div class="qt" id="qr-t"></div><div class="qs" id="qr-s"></div>
+  <img id="qr-img" alt="QR code">
+  <div class="qn" id="qr-n"></div>
+  <div class="row" id="qr-who"></div>
+  <button class="btn primary" id="qr-close">Close</button>
 </div>
 <div class="toast" id="toast"></div>
 

@@ -165,6 +165,11 @@ function itemsFor(date) {
   list.sort((a, b) => a._r - b._r || a._o - b._o);
   return list.filter(it => !it.hidden);
 }
+// QR codes (e.g. Visit Japan Web) live in the private sheet as qr:<id> = JSON {group, title, sub, who, name, ord, img (data:image/png;base64,…)}.
+const safeImg = u => /^data:image\/(png|jpeg|gif|webp);base64,[A-Za-z0-9+/=]+$/.test(String(u || "")) ? u : "";
+function qrs(group) {
+  return collection("qr:").filter(q => safeImg(q.img) && (!group || q.group === group)).sort((a, b) => (a.ord || 0) - (b.ord || 0));
+}
 function collection(prefix) {
   return Object.keys(S).filter(k => k.startsWith(prefix) && !S[k].del)
     .map(k => Object.assign({ key: k, ts: S[k].ts, by: S[k].by }, jval(k) || {}))
@@ -194,6 +199,7 @@ function tags(it) {
   if (it.ref) h += `<button class="tag copy" data-copy="${esc(it.ref)}">${esc(it.ref)}</button>`;
   (it.links || []).forEach(l => { h += linkTag(l); });
   if (it.taxi) h += `<button class="tag" data-taxi="${it.taxi}">Taxi card</button>`;
+  if (it.qr && qrs(it.qr).length) h += `<button class="tag" data-qr="${esc(it.qr)}">QR codes</button>`;
   return h ? `<div class="row">${h}</div>` : "";
 }
 
@@ -292,6 +298,11 @@ function renderMore() {
   $("#h-todo").textContent = META.todoTitle || "Before you go";
   $("#h-arrival").textContent = META.arrivalTitle || "Arrival";
   ["todo-wrap", "arrival-wrap", "info-wrap"].forEach(id => { document.getElementById(id).style.display = DAYS.length ? "" : "none"; });
+  const qg = {}; qrs().forEach(q => { (qg[q.group] = qg[q.group] || []).push(q); });
+  const qw = $("#qr-wrap"); qw.style.display = Object.keys(qg).length ? "" : "none";
+  qw.innerHTML = Object.entries(qg).map(([g, list]) => `<h2>${esc(list[0].title || "QR codes")}</h2><div class="card">
+    ${list[0].sub ? `<p class="sub" style="margin-top:0">${esc(list[0].sub)}</p>` : ""}
+    <div class="row" style="margin:0">${list.map(q => `<button class="btn primary" data-qr="${esc(g)}" data-qrwho="${esc(q.key)}">${esc(q.who || q.name || "QR")}</button>`).join("")}</div></div>`).join("");
   $("#info").innerHTML = INFO.map(i => `<dt>${esc(i[0])}</dt><dd>${esc(i[1])}</dd>`).join("");
   $("#arrival").innerHTML = ARRIVAL.map(a => `<li><b>${esc(a[0])}</b>${esc(a[1])}</li>`).join("");
   $("#todo").innerHTML = TODO.map(([id, t]) => { const on = val("td:" + id) === "1"; return `<li class="${on ? "done" : ""}"><input type="checkbox" id="td-${id}" data-td="${id}" ${on ? "checked" : ""}><label for="td-${id}"><span>${esc(t)}</span></label></li>`; }).join("");
@@ -414,6 +425,19 @@ function openTaxi(k) {
   $("#taxi").classList.add("on");
 }
 
+// ---------- QR codes ----------
+function openQr(group, key) {
+  const list = qrs(group); if (!list.length) return;
+  const me = (cfg.name || "").toLowerCase();
+  const q = list.find(x => x.key === key) || list.find(x => (x.who || "").toLowerCase() === me) || list[0];
+  $("#qr-t").textContent = q.title || "QR code";
+  $("#qr-s").textContent = q.sub || "";
+  $("#qr-img").src = safeImg(q.img);
+  $("#qr-n").textContent = q.name || q.who || "";
+  $("#qr-who").innerHTML = list.length > 1 ? list.map(x => `<button class="tag${x.key === q.key ? " sel" : ""}" data-qr="${esc(group)}" data-qrwho="${esc(x.key)}">${esc(x.who || x.name)}</button>`).join("") : "";
+  $("#qr").classList.add("on");
+}
+
 // ---------- connect ----------
 // Tolerant of whatever comes along with a paste: surrounding text, line breaks, zero-width characters, lower-case prefix, missing padding.
 function decodeSetup(s) {
@@ -446,6 +470,7 @@ document.addEventListener("click", e => {
   const c = t.closest("[data-copy]"); if (c) { e.stopPropagation(); copy(c.dataset.copy); return; }
   if (t.closest("a")) return;
   const tx = t.closest("[data-taxi]"); if (tx) { openTaxi(tx.dataset.taxi); return; }
+  const qb = t.closest("[data-qr]"); if (qb) { e.stopPropagation(); openQr(qb.dataset.qr, qb.dataset.qrwho); return; }
   const ch = t.closest("[data-day]"); if (ch) { selected = +ch.dataset.day; LS.set("tc.sel", selected); renderStrip(); renderDay(); return; }
   const nb = t.closest("nav button"); if (nb) { show(nb.dataset.v); return; }
   const go = t.closest("[data-goto]"); if (go) { if (go.dataset.goto === "log") logTab = "bags"; show(go.dataset.goto); return; }
@@ -487,6 +512,7 @@ document.addEventListener("input", e => {
 $("#sheet-cancel").onclick = closeSheet;
 $("#sheet").addEventListener("click", e => { if (e.target.id === "sheet") closeSheet(); });
 $("#taxi-close").onclick = () => $("#taxi").classList.remove("on");
+$("#qr-close").onclick = () => $("#qr").classList.remove("on");
 
 // ---------- start ----------
 function pickDay() {
