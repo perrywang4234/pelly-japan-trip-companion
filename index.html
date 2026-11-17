@@ -89,6 +89,11 @@ textarea,input{width:100%;font:inherit;font-size:16px;color:var(--ink);backgroun
 textarea{resize:vertical}
 input[type=checkbox]{width:auto;margin:0 6px 0 0}
 .lbl{display:block;font-size:13px;font-weight:600;color:var(--muted);margin:10px 0 0}
+.lrow{display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;padding:8px;margin-top:6px;border:1px solid var(--line);border-radius:10px}
+.lrow input{margin:0}
+.lrow .l-url{grid-column:1 / -1}
+.lrow .tag{padding:8px 12px}
+.hint{font-size:12px;margin:8px 0 0}
 .segs{display:flex;gap:6px;margin:12px 0 4px}
 .segs button{flex:1;padding:9px;border-radius:10px;border:1px solid var(--line);background:var(--card);font:inherit;font-size:14px;font-weight:600;color:var(--muted);cursor:pointer}
 .segs button.on{background:var(--ink);color:var(--paper);border-color:var(--ink)}

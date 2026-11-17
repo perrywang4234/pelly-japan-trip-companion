@@ -90,6 +90,40 @@ function rank(t) {
 // ---------- model ----------
 const FIELDS = ["t", "title", "note", "ref", "st"];
 const MAPS = q => "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q);
+
+// ---------- links (tickets, emails, files, apps) ----------
+// Stored per item as f:<id>:links = JSON [[label, url], ...]; once set it replaces the item's base links.
+const WALLET = "shoebox://";   // opens Apple Wallet (can't target one pass)
+function cleanUrl(u) {
+  u = String(u || "").trim();
+  if (!u) return "";
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = "https://" + u.replace(/^\/+/, "");
+  if (/^(javascript|data|vbscript|file|blob):/i.test(u)) return "";
+  return u;
+}
+const isWeb = u => /^https?:/i.test(u);
+function guessLabel(u) {
+  u = cleanUrl(u); if (!u) return "";
+  if (/^shoebox:/i.test(u)) return "Wallet";
+  if (/^photos-redirect:/i.test(u)) return "Photos";
+  if (/^mailto:/i.test(u)) return "Email";
+  if (/^tel:/i.test(u)) return "Call";
+  if (!isWeb(u)) return "Open app";
+  let h = ""; try { h = new URL(u).hostname.replace(/^www\./, ""); } catch (e) { return "Link"; }
+  const known = [[/mail\.google\./, "Email"], [/(drive|docs)\.google\./, "Ticket (Drive)"], [/icloud\.com/, "Ticket (iCloud)"],
+    [/dropbox\.com/, "Ticket (Dropbox)"], [/maps\.google\.|google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps/, "Map"],
+    [/united\.com/, "United"], [/jal\.co(m|\.jp)/, "JAL"], [/airdo\.jp/, "AIRDO"], [/smart-ex\.jp/, "smartEX"],
+    [/jr-odekake\.net|jr-west|jrwest/, "JR West"], [/tabelog/, "Tabelog"], [/tablecheck/, "TableCheck"], [/omakase/, "Omakase"],
+    [/booking\.com/, "Booking.com"], [/agoda/, "Agoda"], [/expedia/, "Expedia"], [/hyatt/, "Hyatt"], [/ihg|kimpton/, "IHG"]];
+  const hit = known.find(([re]) => re.test(h + new URL(u).pathname));
+  return hit ? hit[1] : h.split(".").slice(-2, -1)[0] || "Link";
+}
+const linkTag = l => {
+  const u = cleanUrl(l[1]); if (!u) return "";
+  return `<a class="tag link" href="${esc(u)}"${isWeb(u) ? ` target="_blank" rel="noopener"` : ""}>${esc(l[0] || guessLabel(u))}</a>`;
+};
+const linkRow = (l = ["", ""]) => `<div class="lrow"><input class="l-url" value="${esc(l[1])}" placeholder="Paste a link" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url">
+  <input class="l-lab" value="${esc(l[0])}" placeholder="Label, e.g. Ticket"><button class="tag" data-linkdel aria-label="Remove link">✕</button></div>`;
 // Trip content lives in the private sheet (keys "base:*"), cached on the phone after the first sync.
 let META = {}, HOTELS = {}, DAYS = [], PLATFORMS = [], ARRIVAL = [], TODO = [], INFO = [], BASE = {};
 function loadBase() {
@@ -110,8 +144,10 @@ function resolveItem(id, base) {
   it.id = id;
   FIELDS.forEach(f => { const v = val(`f:${id}:${f}`); if (v !== undefined) it[f] = v; });
   it.hidden = val(`f:${id}:hide`) === "1";
+  const lv = val(`f:${id}:links`);
+  if (lv !== undefined) { try { it.links = JSON.parse(lv || "[]") || []; } catch (e) {} }
   let newest = 0, by = "";
-  FIELDS.forEach(f => { const e = S[`f:${id}:${f}`]; if (e && e.ts > newest && e.by !== "setup") { newest = e.ts; by = e.by; } });
+  FIELDS.concat("links").forEach(f => { const e = S[`f:${id}:${f}`]; if (e && e.ts > newest && e.by !== "setup") { newest = e.ts; by = e.by; } });
   it.editedBy = by; it.editedAt = newest;
   return it;
 }
@@ -156,7 +192,7 @@ function tags(it) {
   else if (it.st === "todo") h += `<span class="tag todo">To do</span>`;
   else if (it.st === "done") h += `<span class="tag ok">Done</span>`;
   if (it.ref) h += `<button class="tag copy" data-copy="${esc(it.ref)}">${esc(it.ref)}</button>`;
-  (it.links || []).forEach(l => { h += `<a class="tag link" href="${esc(l[1])}" target="_blank" rel="noopener">${esc(l[0])}</a>`; });
+  (it.links || []).forEach(l => { h += linkTag(l); });
   if (it.taxi) h += `<button class="tag" data-taxi="${it.taxi}">Taxi card</button>`;
   return h ? `<div class="row">${h}</div>` : "";
 }
@@ -318,12 +354,20 @@ function editItem(id, date) {
     ${field("e-title", "What", it.title)}
     ${field("e-note", "Details", it.note, { area: 1 })}
     ${field("e-ref", "Confirmation / reference", it.ref, { ph: "Booking #, locker #, PIN…" })}
-    ${statusPick(it.st)}`,
+    ${statusPick(it.st)}
+    <label class="lbl">Links: tickets, emails, files, apps</label>
+    <div id="e-links">${(it.links || []).map(linkRow).join("")}</div>
+    <div class="row"><button class="tag" data-linkadd>+ Add link</button><button class="tag" data-linkadd="wallet">+ Apple Wallet</button></div>
+    <p class="sub hint">Paste any link: a ticket PDF in Drive or iCloud, a confirmation email, a booking page. Links open when you have signal; keep a Wallet pass or screenshot as the offline backup.</p>`,
     () => {
       const nid = id || "u" + uid();
       if (isNew) put("c:" + nid, date);
       const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "" };
       FIELDS.forEach(f => { if ((nv[f] || "") !== (it[f] || "")) put(`f:${nid}:${f}`, nv[f]); });
+      const links = [...document.querySelectorAll("#e-links .lrow")].map(r => {
+        const u = cleanUrl(r.querySelector(".l-url").value); return u ? [r.querySelector(".l-lab").value.trim() || guessLabel(u), u] : null;
+      }).filter(Boolean);
+      if (JSON.stringify(links) !== JSON.stringify(it.links || [])) put(`f:${nid}:links`, JSON.stringify(links));
       renderAll(); toast("Saved");
     },
     isNew ? null : () => { if (it.custom) put("c:" + id, null); else put(`f:${id}:hide`, "1"); renderAll(); toast("Deleted"); });
@@ -405,6 +449,13 @@ document.addEventListener("click", e => {
   const ch = t.closest("[data-day]"); if (ch) { selected = +ch.dataset.day; LS.set("tc.sel", selected); renderStrip(); renderDay(); return; }
   const nb = t.closest("nav button"); if (nb) { show(nb.dataset.v); return; }
   const go = t.closest("[data-goto]"); if (go) { if (go.dataset.goto === "log") logTab = "bags"; show(go.dataset.goto); return; }
+  const la = t.closest("[data-linkadd]");
+  if (la) {
+    const box = $("#e-links"); box.insertAdjacentHTML("beforeend", linkRow(la.dataset.linkadd === "wallet" ? ["Wallet", WALLET] : undefined));
+    if (la.dataset.linkadd !== "wallet") box.lastElementChild.querySelector(".l-url").focus();
+    return;
+  }
+  const ld = t.closest("[data-linkdel]"); if (ld) { ld.closest(".lrow").remove(); return; }
   const seg = t.closest(".seg .tag"); if (seg) { seg.parentElement.querySelectorAll(".tag").forEach(x => x.classList.toggle("sel", x === seg)); return; }
   const ed = t.closest("[data-edit]"); if (ed) { editItem(ed.dataset.edit); return; }
   const ad = t.closest("[data-add]"); if (ad) { editItem(null, ad.dataset.add); return; }
@@ -427,6 +478,10 @@ document.addEventListener("change", e => {
 });
 let noteTimer;
 document.addEventListener("input", e => {
+  const tg = e.target;
+  // fill in a label from the pasted link until the label is typed by hand
+  if (tg.classList.contains("l-lab")) tg.dataset.auto = "";
+  if (tg.classList.contains("l-url")) { const lab = tg.closest(".lrow").querySelector(".l-lab"); if (!lab.value || lab.dataset.auto) { lab.value = guessLabel(tg.value); lab.dataset.auto = "1"; } }
   if (e.target.id === "daynote") { const d = DAYS[selected].date, v = e.target.value; clearTimeout(noteTimer); noteTimer = setTimeout(() => put("dn:" + d, v), 700); }
 });
 $("#sheet-cancel").onclick = closeSheet;
