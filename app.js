@@ -371,7 +371,15 @@ function openTaxi(k) {
 }
 
 // ---------- connect ----------
-function decodeSetup(s) { try { const j = JSON.parse(decodeURIComponent(escape(atob(s.trim().replace(/^TC1:/, ""))))); return j.u && j.c ? j : null; } catch (e) { return null; } }
+// Tolerant of whatever comes along with a paste: surrounding text, line breaks, zero-width characters, lower-case prefix, missing padding.
+function decodeSetup(s) {
+  const clean = String(s || "").replace(/[\s\u200B-\u200D\uFEFF]/g, "");
+  const m = clean.match(/TC1:([A-Za-z0-9+/_-]+=*)/i) || clean.match(/^([A-Za-z0-9+/_-]{40,}=*)$/);
+  if (!m) return null;
+  let b = m[1].replace(/-/g, "+").replace(/_/g, "/").replace(/=+$/, "");
+  while (b.length % 4) b += "=";
+  try { const j = JSON.parse(decodeURIComponent(escape(atob(b)))); return j && j.u && j.c ? j : null; } catch (e) { return null; }
+}
 const encodeSetup = () => "TC1:" + btoa(unescape(encodeURIComponent(JSON.stringify({ u: cfg.url, c: cfg.code }))));
 async function connect() {
   const code = $("#c-code").value; let url = $("#c-url").value.trim(), pass = $("#c-pass").value.trim();
