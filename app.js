@@ -90,7 +90,8 @@ function rank(t) {
 // ---------- model ----------
 // Per-item fields that can be edited on a phone (stored as f:<id>:<field>).
 // go = how to get there, cat = travel | food | hotel | do (used by the Bookings filter).
-const FIELDS = ["t", "title", "note", "go", "ref", "st", "cat"];
+// ja = Japanese name(s) shown under the title.
+const FIELDS = ["t", "title", "note", "go", "ref", "st", "cat", "ja"];
 const MAPS = q => "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q);
 
 // ---------- links (tickets, emails, files, apps) ----------
@@ -139,10 +140,40 @@ function loadBase() {
   GUIDES = jval("base:guides") || (ARRIVAL.length ? [{ id: "arrival", title: META.arrivalTitle || "Arrival", steps: ARRIVAL }] : []);
   TODO = jval("base:todo") || [];
   INFO = jval("base:info") || [];
+  buildJa(jval("base:ja") || {});
   DAYS = Object.keys(S).filter(k => k.startsWith("base:day:") && !S[k].del).sort().map(k => jval(k)).filter(Boolean);
   BASE = {}; DAYS.forEach(d => (d.items || []).forEach((it, i) => { BASE[it.id] = Object.assign({ date: d.date, _i: i }, it); }));
   if (selected >= DAYS.length) selected = Math.max(DAYS.length - 1, 0);
 }
+// Japanese names for places mentioned in notes, getting-there text and guides.
+// base:ja = {"Kyoto Stn": "京都駅", ...}. The first mention of each name in a block gets its Japanese
+// added after it (longest name wins; skipped when the text already has Japanese in brackets right after).
+let JA = {}, JA_RE = null;
+function buildJa(map) {
+  JA = map && typeof map === "object" ? map : {};
+  const keys = Object.keys(JA).filter(k => k && JA[k]).sort((a, b) => b.length - a.length);
+  JA_RE = keys.length ? new RegExp(keys.map(k => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"), "g") : null;
+}
+const WORDC = /[A-Za-z0-9\u00C0-\u024F'’]/;
+const JA_AFTER = /^\s*[(（]?\s*[\u3040-\u30ff\u3400-\u9fff]/;
+function escJa(text) {
+  text = String(text == null ? "" : text);
+  if (!JA_RE) return esc(text);
+  let out = "", last = 0, m;
+  const seen = new Set();
+  JA_RE.lastIndex = 0;
+  while ((m = JA_RE.exec(text))) {
+    const a = m.index, b = a + m[0].length;
+    if ((a > 0 && WORDC.test(text[a - 1])) || (b < text.length && WORDC.test(text[b]))) { JA_RE.lastIndex = a + 1; continue; }
+    if (seen.has(JA[m[0]]) || JA_AFTER.test(text.slice(b, b + 4))) continue;
+    seen.add(JA[m[0]]);
+    out += esc(text.slice(last, b)) + `<span class="jx" lang="ja">${esc(JA[m[0]])}</span>`;
+    last = b;
+  }
+  return out + esc(text.slice(last));
+}
+const jaLine = s => s ? `<div class="ja-name" lang="ja">${esc(s)}</div>` : "";
+
 const people = () => (META.people && META.people.length ? META.people : [cfg.name || "Me"]);
 
 function resolveItem(id, base) {
@@ -338,13 +369,13 @@ let bkFilter = LS.get("tc.bkf", "all");
 const openGuides = new Set(LS.get("tc.open", []));   // which travel-day guides are unfolded (per phone)
 
 const ICON_GO = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="3" width="14" height="14" rx="3"/><path d="M5 11h14M9 21l-2 0 1.5-4M15 21h2l-1.5-4"/><circle cx="9" cy="14" r=".6"/><circle cx="15" cy="14" r=".6"/></svg>`;
-const goBlock = it => it.go ? `<div class="go">${ICON_GO}<span>${esc(it.go)}</span></div>` : "";
+const goBlock = it => it.go ? `<div class="go">${ICON_GO}<span>${escJa(it.go)}</span></div>` : "";
 
 function guideHTML(g) {
   const open = openGuides.has(g.id);
   return `<details class="card guide" data-gid="${esc(g.id)}"${open ? " open" : ""}>
-    <summary><div><div class="item-title">${esc(g.title)}</div>${g.sub ? `<div class="sub">${esc(g.sub)}</div>` : ""}</div><span class="chev" aria-hidden="true"></span></summary>
-    <ol class="steps">${(g.steps || []).map(s => `<li><b>${esc(s[0])}</b>${esc(s[1])}</li>`).join("")}</ol>
+    <summary><div><div class="item-title">${esc(g.title)}</div>${g.sub ? `<div class="sub">${escJa(g.sub)}</div>` : ""}</div><span class="chev" aria-hidden="true"></span></summary>
+    <ol class="steps">${(g.steps || []).map(s => `<li><b>${escJa(s[0])}</b>${escJa(s[1])}</li>`).join("")}</ol>
     ${(g.links || []).length ? `<div class="row">${g.links.map(l => `<a class="tag link" href="${esc(l[1])}" target="_blank" rel="noopener">${esc(l[0])}</a>`).join("")}</div>` : ""}
   </details>`;
 }
@@ -416,13 +447,13 @@ function renderDay() {
   const bagNote = bags.length ? `<div class="status amber" data-goto="log"><b>${bags.length} bag item${bags.length > 1 ? "s" : ""} to collect:</b> ${esc(bags.map(b => b.what).join(", "))}</div>` : "";
   $("#day").innerHTML = banner + bagNote + `<div class="card">
     <div class="dayhead"><div class="city">${esc(d.city)}</div><div class="sub">${esc(fmt(d.date, { month: "short", day: "numeric" }))}</div></div>
-    ${h ? `<div class="sleep"><div><b>${esc(h.name)}</b><div class="sub">${esc(h.times)}${val("conf:" + d.sleep) ? " · " + esc(val("conf:" + d.sleep)) : ""}</div></div>
+    ${h ? `<div class="sleep"><div><b>${esc(h.name)}</b>${jaLine(h.jp)}<div class="sub">${esc(h.times)}${val("conf:" + d.sleep) ? " · " + esc(val("conf:" + d.sleep)) : ""}</div></div>
       <button class="btn" data-taxi="${d.sleep}">Taxi card</button></div>` : ""}
   </div>
   ${GUIDES.filter(g => g.date === d.date).map(guideHTML).join("")}
   <div class="card"><ul class="tl">${items.map(it => `<li class="${it.key ? "key" : ""}" data-edit="${it.id}">
     <div class="time">${esc(it.t || "")}</div>
-    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${it.note ? `<div class="note">${esc(it.note)}</div>` : ""}${goBlock(it)}${tags(it)}${attStrip(it.id)}
+    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${jaLine(it.ja)}${it.note ? `<div class="note">${escJa(it.note)}</div>` : ""}${goBlock(it)}${tags(it)}${attStrip(it.id)}
     ${it.editedBy ? `<div class="by">edited by ${esc(it.editedBy)} · ${ago(it.editedAt)}</div>` : ""}</div></li>`).join("")}</ul>
     <button class="btn wide" data-add="${d.date}">+ Add to this day</button></div>
   <div class="card"><h3>Notes for ${esc(fmt(d.date, { month: "short", day: "numeric" }))}</h3>
@@ -441,9 +472,9 @@ function renderBookings() {
     <div class="row">${c ? `<span class="tag ok">Booked</span><button class="tag copy" data-copy="${esc(c)}">${esc(c)}</button>` : `<span class="tag todo">No conf. #</span>`}<button class="tag" data-taxi="${k}">Taxi card</button></div></div></li>`; }).join("");
   $("#bk").innerHTML =
     `<div class="segs" id="bkf">${CATS.map(([v, l]) => `<button data-bkf="${v}" class="${bkFilter === v ? "on" : ""}">${l}</button>`).join("")}</div>`
-    + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>` : "")
+    + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${jaLine(it.ja)}${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>` : "")
     + (groups.length ? `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${esc(g.d.city)}</span></div>
-      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>`).join("") : "")
+      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${jaLine(it.ja)}${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>`).join("") : "")
     + (showHotels ? `<h2>Hotels</h2><div class="card"><ul class="tl">${hotelRows}</ul></div>` : "")
     + (!groups.length && !showHotels ? `<div class="card sub">Nothing in this category yet.</div>` : "")
     + (bkFilter === "all" || bkFilter === "travel" ? `<h2>Book online</h2><div class="card"><div class="row" style="margin:0">${PLATFORMS.map(p => `<a class="tag link" href="${esc(p[1])}" target="_blank" rel="noopener">${esc(p[0])}</a>`).join("")}</div></div>` : "");
@@ -451,7 +482,7 @@ function renderBookings() {
 
 function renderHotels() {
   $("#ht").innerHTML = Object.entries(HOTELS).map(([k, h]) => `<div class="card">
-    <div class="dayhead"><h3>${esc(h.name)}</h3><span class="sub">${esc(h.city)}</span></div>
+    <div class="dayhead"><h3>${esc(h.name)}</h3><span class="sub">${esc(h.city)}</span></div>${jaLine(h.jp)}
     <div class="note">${esc(h.dates)}</div>
     <dl class="kv"><dt>Times</dt><dd>${esc(h.times)}</dd>
       <dt>Address</dt><dd>${esc(h.addr)}<br><span class="jp">${esc(h.addrJp)}</span></dd>
@@ -618,6 +649,7 @@ function editItem(id, date) {
   openSheet(`<h3>${isNew ? "Add to " + fmt(date, { month: "short", day: "numeric" }) : "Edit"}</h3>
     ${field("e-t", "Time", it.t, { ph: "e.g. 2:15p, ~11:00, PM" })}
     ${field("e-title", "What", it.title)}
+    ${field("e-ja", "Japanese name", it.ja, { ph: "e.g. 伏見稲荷大社 (shown under the title)" })}
     ${field("e-note", "Details", it.note, { area: 1 })}
     ${field("e-go", "Getting there", it.go, { area: 1, rows: 2, ph: "e.g. Walk from hotel ~10 min · Keihan Line → Fushimi-Inari" })}
     ${field("e-ref", "Confirmation / reference", it.ref, { ph: "Booking #, locker #, PIN…" })}
@@ -635,7 +667,7 @@ function editItem(id, date) {
       if (EA && EA.busy) { toast("Still preparing the picture…"); return false; }
       const nid = id || "u" + uid();
       if (isNew) put("c:" + nid, date);
-      const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), go: $("#e-go").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "",
+      const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), go: $("#e-go").value.trim(), ja: $("#e-ja").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "",
         cat: $("#e-cat .sel") ? $("#e-cat .sel").dataset.st : (it.cat || "") };
       if (!isNew && !it.cat && nv.cat === catOf(it)) nv.cat = "";   // don't pin a guessed type unless it was changed
       FIELDS.forEach(f => { if ((nv[f] || "") !== (it[f] || "")) put(`f:${nid}:${f}`, nv[f]); });
