@@ -129,6 +129,21 @@ nav button.on{color:var(--red);font-weight:700}
 .toast{position:fixed;left:50%;bottom:calc(86px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 14px;border-radius:999px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90vw}
 .toast.on{opacity:1}
 .foot{font-size:12px;color:var(--muted);margin:24px 0 8px}
+/* getting there */
+.go{display:flex;gap:7px;align-items:flex-start;margin-top:6px;padding:6px 9px;border-radius:9px;background:var(--paper);border:1px solid var(--line);font-size:13.5px;line-height:1.4;white-space:pre-wrap}
+.go svg{width:15px;height:15px;flex:0 0 auto;margin-top:2px;color:var(--red)}
+/* foldable travel-day guides */
+details.guide{padding:0}
+details.guide summary{list-style:none;display:flex;justify-content:space-between;align-items:center;gap:10px;padding:13px 14px;cursor:pointer}
+details.guide summary::-webkit-details-marker{display:none}
+details.guide summary .item-title::before{content:"✈ ";color:var(--red)}
+details.guide .chev{flex:0 0 auto;width:9px;height:9px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);margin-top:-4px;transition:transform .15s}
+details.guide[open] .chev{transform:rotate(-135deg);margin-top:4px}
+details.guide[open] summary{border-bottom:1px dashed var(--line)}
+details.guide .steps{padding:12px 14px 4px 36px}
+details.guide .row{padding:0 14px 14px;margin-top:0}
+.guide-tag{border-color:var(--red);color:var(--red);font-weight:600}
+.dayhead h2{margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -151,7 +166,8 @@ nav button.on{color:var(--red);font-weight:700}
     <h2>Sync</h2><div class="card" id="conn"></div>
     <div id="qr-wrap" style="display:none"></div>
     <div id="todo-wrap"><h2 id="h-todo">Before you go</h2><div class="card"><ul class="check" id="todo"></ul></div></div>
-    <div id="arrival-wrap"><h2 id="h-arrival">Arrival</h2><div class="card"><ol class="steps" id="arrival"></ol></div></div>
+    <div id="arrival-wrap"><div class="dayhead"><h2>Travel-day guides</h2><button class="tag" id="guides-toggle">Unfold all</button></div>
+      <p class="sub" style="margin:0">Step-by-step for each flight day. Tap a title to fold or unfold it.</p><div id="guides"></div></div>
     <div id="info-wrap"><h2>Good to know</h2><div class="card"><dl class="kv" style="margin:0" id="info"></dl></div></div>
     <p class="foot">Works offline once opened from the Home Screen. Edits save on this phone immediately and sync with the Google Sheet (and the other phone) whenever there's a connection. Same field edited on both phones: the later edit wins.</p>
   </section>

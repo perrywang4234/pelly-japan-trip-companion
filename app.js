@@ -88,7 +88,9 @@ function rank(t) {
 }
 
 // ---------- model ----------
-const FIELDS = ["t", "title", "note", "ref", "st"];
+// Per-item fields that can be edited on a phone (stored as f:<id>:<field>).
+// go = how to get there, cat = travel | food | hotel | do (used by the Bookings filter).
+const FIELDS = ["t", "title", "note", "go", "ref", "st", "cat"];
 const MAPS = q => "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(q);
 
 // ---------- links (tickets, emails, files, apps) ----------
@@ -124,13 +126,17 @@ const linkTag = l => {
 };
 const linkRow = (l = ["", ""]) => `<div class="lrow"><input class="l-url" value="${esc(l[1])}" placeholder="Paste a link" autocapitalize="off" autocorrect="off" spellcheck="false" inputmode="url">
   <input class="l-lab" value="${esc(l[0])}" placeholder="Label, e.g. Ticket"><button class="tag" data-linkdel aria-label="Remove link">✕</button></div>`;
+const DIR = q => "https://www.google.com/maps/dir/?api=1&travelmode=transit&destination=" + encodeURIComponent(q);
 // Trip content lives in the private sheet (keys "base:*"), cached on the phone after the first sync.
-let META = {}, HOTELS = {}, DAYS = [], PLATFORMS = [], ARRIVAL = [], TODO = [], INFO = [], BASE = {};
+let META = {}, HOTELS = {}, DAYS = [], PLATFORMS = [], ARRIVAL = [], GUIDES = [], TODO = [], INFO = [], BASE = {};
 function loadBase() {
   META = jval("base:meta") || {};
   HOTELS = jval("base:hotels") || {};
   PLATFORMS = jval("base:platforms") || [];
   ARRIVAL = jval("base:arrival") || [];
+  // Travel-day guides: [{id, date, title, sub, steps:[[head, text]], links:[[label, url]]}].
+  // Older sheets only have base:arrival, which becomes a single guide.
+  GUIDES = jval("base:guides") || (ARRIVAL.length ? [{ id: "arrival", title: META.arrivalTitle || "Arrival", steps: ARRIVAL }] : []);
   TODO = jval("base:todo") || [];
   INFO = jval("base:info") || [];
   DAYS = Object.keys(S).filter(k => k.startsWith("base:day:") && !S[k].del).sort().map(k => jval(k)).filter(Boolean);
@@ -176,8 +182,39 @@ function collection(prefix) {
     .sort((a, b) => (b.created || b.ts) - (a.created || a.ts));
 }
 
+// Category for the Bookings filter. Base items carry `cat`; for items added on a phone without one, guess from the title.
+const CATS = [["all", "All"], ["travel", "Travel"], ["food", "Food"], ["hotel", "Hotel"]];
+function catOf(it) {
+  if (it.cat) return it.cat;
+  const s = (it.title || "") + " " + (it.note || "");
+  if (/\b(UA\d|JAL|AIRDO|flight|fly|train|shinkansen|nozomi|express|bus|limousine|keikyu|JR |taxi|airport|haneda|itami|chitose|ferry|locker|takky)/i.test(s)) return "travel";
+  if (/\b(lunch|dinner|breakfast|brunch|curry|crab|sushi|ramen|yakiniku|kaiseki|izakaya|caf[eé]|coffee|bar|market|tea|restaurant|eat|food)/i.test(s)) return "food";
+  if (/\b(hotel|ryokan|inn|check[- ]?in|check[- ]?out)\b/i.test(s)) return "hotel";
+  return "do";
+}
+
 // ---------- rendering ----------
 let selected = 0, view = "days", logTab = "bags";
+let bkFilter = LS.get("tc.bkf", "all");
+const openGuides = new Set(LS.get("tc.open", []));   // which travel-day guides are unfolded (per phone)
+
+const ICON_GO = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="3" width="14" height="14" rx="3"/><path d="M5 11h14M9 21l-2 0 1.5-4M15 21h2l-1.5-4"/><circle cx="9" cy="14" r=".6"/><circle cx="15" cy="14" r=".6"/></svg>`;
+const goBlock = it => it.go ? `<div class="go">${ICON_GO}<span>${esc(it.go)}</span></div>` : "";
+
+function guideHTML(g) {
+  const open = openGuides.has(g.id);
+  return `<details class="card guide" data-gid="${esc(g.id)}"${open ? " open" : ""}>
+    <summary><div><div class="item-title">${esc(g.title)}</div>${g.sub ? `<div class="sub">${esc(g.sub)}</div>` : ""}</div><span class="chev" aria-hidden="true"></span></summary>
+    <ol class="steps">${(g.steps || []).map(s => `<li><b>${esc(s[0])}</b>${esc(s[1])}</li>`).join("")}</ol>
+    ${(g.links || []).length ? `<div class="row">${g.links.map(l => `<a class="tag link" href="${esc(l[1])}" target="_blank" rel="noopener">${esc(l[0])}</a>`).join("")}</div>` : ""}
+  </details>`;
+}
+function openGuide(id) {
+  openGuides.add(id); LS.set("tc.open", [...openGuides]);
+  let el = document.querySelector(`.view.on [data-gid="${CSS.escape(id)}"]`);
+  if (!el) { show("more"); el = document.querySelector(`.view.on [data-gid="${CSS.escape(id)}"]`); }
+  if (el) { el.open = true; el.scrollIntoView({ behavior: "smooth", block: "start" }); }
+}
 
 function renderSync() {
   const el = $("#sync"); if (!el) return;
@@ -197,6 +234,8 @@ function tags(it) {
   else if (it.st === "todo") h += `<span class="tag todo">To do</span>`;
   else if (it.st === "done") h += `<span class="tag ok">Done</span>`;
   if (it.ref) h += `<button class="tag copy" data-copy="${esc(it.ref)}">${esc(it.ref)}</button>`;
+  if (it.guide && GUIDES.some(g => g.id === it.guide)) h += `<button class="tag guide-tag" data-guide="${esc(it.guide)}">Step by step</button>`;
+  if (it.dir) h += `<a class="tag link" href="${esc(DIR(it.dir))}" target="_blank" rel="noopener">Directions</a>`;
   (it.links || []).forEach(l => { h += linkTag(l); });
   if (it.taxi) h += `<button class="tag" data-taxi="${it.taxi}">Taxi card</button>`;
   if (it.qr && qrs(it.qr).length) h += `<button class="tag" data-qr="${esc(it.qr)}">QR codes</button>`;
@@ -234,9 +273,10 @@ function renderDay() {
     ${h ? `<div class="sleep"><div><b>${esc(h.name)}</b><div class="sub">${esc(h.times)}${val("conf:" + d.sleep) ? " · " + esc(val("conf:" + d.sleep)) : ""}</div></div>
       <button class="btn" data-taxi="${d.sleep}">Taxi card</button></div>` : ""}
   </div>
+  ${GUIDES.filter(g => g.date === d.date).map(guideHTML).join("")}
   <div class="card"><ul class="tl">${items.map(it => `<li class="${it.key ? "key" : ""}" data-edit="${it.id}">
     <div class="time">${esc(it.t || "")}</div>
-    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${it.note ? `<div class="note">${esc(it.note)}</div>` : ""}${tags(it)}
+    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${it.note ? `<div class="note">${esc(it.note)}</div>` : ""}${goBlock(it)}${tags(it)}
     ${it.editedBy ? `<div class="by">edited by ${esc(it.editedBy)} · ${ago(it.editedAt)}</div>` : ""}</div></li>`).join("")}</ul>
     <button class="btn wide" data-add="${d.date}">+ Add to this day</button></div>
   <div class="card"><h3>Notes for ${esc(fmt(d.date, { month: "short", day: "numeric" }))}</h3>
@@ -244,13 +284,23 @@ function renderDay() {
 }
 
 function renderBookings() {
-  const groups = DAYS.map(d => ({ d, items: itemsFor(d.date).filter(it => it.ref || it.st === "todo" || it.st === "ok") })).filter(g => g.items.length);
+  if (!CATS.some(c => c[0] === bkFilter)) bkFilter = "all";
+  const pass = it => bkFilter === "all" || catOf(it) === bkFilter;
+  const groups = DAYS.map(d => ({ d, items: itemsFor(d.date).filter(it => (it.ref || it.st === "todo" || it.st === "ok") && pass(it)) })).filter(g => g.items.length);
   const todo = groups.flatMap(g => g.items.filter(it => it.st === "todo").map(it => ({ it, d: g.d })));
+  const showHotels = (bkFilter === "all" || bkFilter === "hotel") && Object.keys(HOTELS).length;
+  const short = iso => fmt(iso, { month: "short", day: "numeric" });
+  const hotelRows = Object.entries(HOTELS).map(([k, h]) => { const c = val("conf:" + k); return `<li data-hedit="${k}"><div class="time">${esc((h.dates || "").split("·")[0].trim())}</div>
+    <div><div class="item-title">${esc(h.name)}</div><div class="note">${esc(h.city)}${h.via ? " · " + esc(h.via) : ""}</div>
+    <div class="row">${c ? `<span class="tag ok">Booked</span><button class="tag copy" data-copy="${esc(c)}">${esc(c)}</button>` : `<span class="tag todo">No conf. #</span>`}<button class="tag" data-taxi="${k}">Taxi card</button></div></div></li>`; }).join("");
   $("#bk").innerHTML =
-    (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${fmt(d.date, { month: "short", day: "numeric" })}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>` : "")
-    + `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${esc(g.d.city)}</span></div>
-      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>`).join("")
-    + `<h2>Book online</h2><div class="card"><div class="row" style="margin:0">${PLATFORMS.map(p => `<a class="tag link" href="${esc(p[1])}" target="_blank" rel="noopener">${esc(p[0])}</a>`).join("")}</div></div>`;
+    `<div class="segs" id="bkf">${CATS.map(([v, l]) => `<button data-bkf="${v}" class="${bkFilter === v ? "on" : ""}">${l}</button>`).join("")}</div>`
+    + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>` : "")
+    + (groups.length ? `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${esc(g.d.city)}</span></div>
+      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>`).join("") : "")
+    + (showHotels ? `<h2>Hotels</h2><div class="card"><ul class="tl">${hotelRows}</ul></div>` : "")
+    + (!groups.length && !showHotels ? `<div class="card sub">Nothing in this category yet.</div>` : "")
+    + (bkFilter === "all" || bkFilter === "travel" ? `<h2>Book online</h2><div class="card"><div class="row" style="margin:0">${PLATFORMS.map(p => `<a class="tag link" href="${esc(p[1])}" target="_blank" rel="noopener">${esc(p[0])}</a>`).join("")}</div></div>` : "");
 }
 
 function renderHotels() {
@@ -296,7 +346,6 @@ function renderLog() {
 
 function renderMore() {
   $("#h-todo").textContent = META.todoTitle || "Before you go";
-  $("#h-arrival").textContent = META.arrivalTitle || "Arrival";
   ["todo-wrap", "arrival-wrap", "info-wrap"].forEach(id => { document.getElementById(id).style.display = DAYS.length ? "" : "none"; });
   const qg = {}; qrs().forEach(q => { (qg[q.group] = qg[q.group] || []).push(q); });
   const qw = $("#qr-wrap"); qw.style.display = Object.keys(qg).length ? "" : "none";
@@ -304,7 +353,9 @@ function renderMore() {
     ${list[0].sub ? `<p class="sub" style="margin-top:0">${esc(list[0].sub)}</p>` : ""}
     <div class="row" style="margin:0">${list.map(q => `<button class="btn primary" data-qr="${esc(g)}" data-qrwho="${esc(q.key)}">${esc(q.who || q.name || "QR")}</button>`).join("")}</div></div>`).join("");
   $("#info").innerHTML = INFO.map(i => `<dt>${esc(i[0])}</dt><dd>${esc(i[1])}</dd>`).join("");
-  $("#arrival").innerHTML = ARRIVAL.map(a => `<li><b>${esc(a[0])}</b>${esc(a[1])}</li>`).join("");
+  const allOpen = GUIDES.length && GUIDES.every(g => openGuides.has(g.id));
+  $("#guides-toggle").textContent = allOpen ? "Fold all" : "Unfold all";
+  $("#guides").innerHTML = GUIDES.map(g => g.date ? Object.assign({}, g, { title: `${fmt(g.date, { month: "short", day: "numeric" })} · ${g.title}` }) : g).map(guideHTML).join("");
   $("#todo").innerHTML = TODO.map(([id, t]) => { const on = val("td:" + id) === "1"; return `<li class="${on ? "done" : ""}"><input type="checkbox" id="td-${id}" data-td="${id}" ${on ? "checked" : ""}><label for="td-${id}"><span>${esc(t)}</span></label></li>`; }).join("");
   $("#conn").innerHTML = cfg.url ? `<dl class="kv" style="margin:0"><dt>You are</dt><dd>${esc(cfg.name || "—")}</dd><dt>Status</dt><dd id="sync2"></dd><dt>Last sync</dt><dd>${ago(lastSync)}</dd></dl>
       <div class="row"><button class="btn primary" data-syncnow>Sync now</button><button class="btn" data-share>Setup code for the other phone</button><button class="btn" data-disconnect>Disconnect</button></div>`
@@ -364,8 +415,10 @@ function editItem(id, date) {
     ${field("e-t", "Time", it.t, { ph: "e.g. 2:15p, ~11:00, PM" })}
     ${field("e-title", "What", it.title)}
     ${field("e-note", "Details", it.note, { area: 1 })}
+    ${field("e-go", "Getting there", it.go, { area: 1, rows: 2, ph: "e.g. Walk from hotel ~10 min · Keihan Line → Fushimi-Inari" })}
     ${field("e-ref", "Confirmation / reference", it.ref, { ph: "Booking #, locker #, PIN…" })}
     ${statusPick(it.st)}
+    <label class="lbl">Type (for the Bookings filter)<div class="row seg" id="e-cat">${[["travel", "Travel"], ["food", "Food"], ["hotel", "Hotel"], ["do", "Other"]].map(([v, l]) => `<button class="tag${catOf(it) === v ? " sel" : ""}" data-st="${v}">${l}</button>`).join("")}</div></label>
     <label class="lbl">Links: tickets, emails, files, apps</label>
     <div id="e-links">${(it.links || []).map(linkRow).join("")}</div>
     <div class="row"><button class="tag" data-linkadd>+ Add link</button><button class="tag" data-linkadd="wallet">+ Apple Wallet</button></div>
@@ -373,7 +426,9 @@ function editItem(id, date) {
     () => {
       const nid = id || "u" + uid();
       if (isNew) put("c:" + nid, date);
-      const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "" };
+      const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), go: $("#e-go").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "",
+        cat: $("#e-cat .sel") ? $("#e-cat .sel").dataset.st : (it.cat || "") };
+      if (!isNew && !it.cat && nv.cat === catOf(it)) nv.cat = "";   // don't pin a guessed type unless it was changed
       FIELDS.forEach(f => { if ((nv[f] || "") !== (it[f] || "")) put(`f:${nid}:${f}`, nv[f]); });
       const links = [...document.querySelectorAll("#e-links .lrow")].map(r => {
         const u = cleanUrl(r.querySelector(".l-url").value); return u ? [r.querySelector(".l-lab").value.trim() || guessLabel(u), u] : null;
@@ -469,8 +524,16 @@ document.addEventListener("click", e => {
   const t = e.target;
   const c = t.closest("[data-copy]"); if (c) { e.stopPropagation(); copy(c.dataset.copy); return; }
   if (t.closest("a")) return;
+  if (t.closest("summary")) return;   // native fold/unfold of a travel-day guide
   const tx = t.closest("[data-taxi]"); if (tx) { openTaxi(tx.dataset.taxi); return; }
   const qb = t.closest("[data-qr]"); if (qb) { e.stopPropagation(); openQr(qb.dataset.qr, qb.dataset.qrwho); return; }
+  const gd = t.closest("[data-guide]"); if (gd) { openGuide(gd.dataset.guide); return; }
+  const bf = t.closest("[data-bkf]"); if (bf) { bkFilter = bf.dataset.bkf; LS.set("tc.bkf", bkFilter); renderBookings(); return; }
+  if (t.closest("#guides-toggle")) {
+    const all = GUIDES.length && GUIDES.every(g => openGuides.has(g.id));
+    GUIDES.forEach(g => { if (all) openGuides.delete(g.id); else openGuides.add(g.id); });
+    LS.set("tc.open", [...openGuides]); renderMore(); return;
+  }
   const ch = t.closest("[data-day]"); if (ch) { selected = +ch.dataset.day; LS.set("tc.sel", selected); renderStrip(); renderDay(); return; }
   const nb = t.closest("nav button"); if (nb) { show(nb.dataset.v); return; }
   const go = t.closest("[data-goto]"); if (go) { if (go.dataset.goto === "log") logTab = "bags"; show(go.dataset.goto); return; }
@@ -501,6 +564,14 @@ document.addEventListener("change", e => {
   const td = e.target.dataset && e.target.dataset.td;
   if (td) { put("td:" + td, e.target.checked ? "1" : "0"); e.target.closest("li").classList.toggle("done", e.target.checked); }
 });
+// Remember which guides are unfolded so a background sync/re-render doesn't fold them back up.
+// ("toggle" doesn't bubble, so listen in the capture phase.)
+document.addEventListener("toggle", e => {
+  const g = e.target && e.target.dataset && e.target.dataset.gid; if (!g) return;
+  if (e.target.open) openGuides.add(g); else openGuides.delete(g);
+  LS.set("tc.open", [...openGuides]);
+  if (view === "more") { const all = GUIDES.length && GUIDES.every(x => openGuides.has(x.id)); $("#guides-toggle").textContent = all ? "Fold all" : "Unfold all"; }
+}, true);
 let noteTimer;
 document.addEventListener("input", e => {
   const tg = e.target;
