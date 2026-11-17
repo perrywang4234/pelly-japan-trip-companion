@@ -172,6 +172,9 @@ function escJa(text) {
   }
   return out + esc(text.slice(last));
 }
+// Japanese for a city name ("Kyoto" → "京都"), from the same base:ja glossary.
+const cityJa = c => (c && JA[c]) || "";
+const cityHTML = c => esc(c) + (cityJa(c) ? ` <span class="jx" lang="ja">${esc(cityJa(c))}</span>` : "");
 const jaLine = s => s ? `<div class="ja-name" lang="ja">${esc(s)}</div>` : "";
 
 const people = () => (META.people && META.people.length ? META.people : [cfg.name || "Me"]);
@@ -422,7 +425,7 @@ function attStrip(id) {
 function renderStrip() {
   const today = tokyoToday();
   $("#strip").innerHTML = DAYS.map((d, i) => `<button class="chip${d.date === today ? " today" : ""}${i === selected ? " sel" : ""}" data-day="${i}">
-    <div class="d">${fmt(d.date, { weekday: "short" })}</div><div class="n">${fmt(d.date, { day: "numeric" })}</div><div class="c">${esc(d.city)}</div></button>`).join("");
+    <div class="d">${fmt(d.date, { weekday: "short" })}</div><div class="n">${fmt(d.date, { day: "numeric" })}</div><div class="c">${esc(d.city)}</div>${cityJa(d.city) ? `<div class="c" lang="ja">${esc(cityJa(d.city))}</div>` : ""}</button>`).join("");
   const el = $("#strip").children[selected]; if (el) el.scrollIntoView({ inline: "center", block: "nearest" });
 }
 
@@ -446,7 +449,7 @@ function renderDay() {
   const bags = collection("bag:").filter(b => !b.done);
   const bagNote = bags.length ? `<div class="status amber" data-goto="log"><b>${bags.length} bag item${bags.length > 1 ? "s" : ""} to collect:</b> ${esc(bags.map(b => b.what).join(", "))}</div>` : "";
   $("#day").innerHTML = banner + bagNote + `<div class="card">
-    <div class="dayhead"><div class="city">${esc(d.city)}</div><div class="sub">${esc(fmt(d.date, { month: "short", day: "numeric" }))}</div></div>
+    <div class="dayhead"><div class="city">${cityHTML(d.city)}</div><div class="sub">${esc(fmt(d.date, { month: "short", day: "numeric" }))}</div></div>
     ${h ? `<div class="sleep"><div><b>${esc(h.name)}</b>${jaLine(h.jp)}<div class="sub">${esc(h.times)}${val("conf:" + d.sleep) ? " · " + esc(val("conf:" + d.sleep)) : ""}</div></div>
       <button class="btn" data-taxi="${d.sleep}">Taxi card</button></div>` : ""}
   </div>
@@ -468,12 +471,12 @@ function renderBookings() {
   const showHotels = (bkFilter === "all" || bkFilter === "hotel") && Object.keys(HOTELS).length;
   const short = iso => fmt(iso, { month: "short", day: "numeric" });
   const hotelRows = Object.entries(HOTELS).map(([k, h]) => { const c = val("conf:" + k); return `<li data-hedit="${k}"><div class="time">${esc((h.dates || "").split("·")[0].trim())}</div>
-    <div><div class="item-title">${esc(h.name)}</div><div class="note">${esc(h.city)}${h.via ? " · " + esc(h.via) : ""}</div>
+    <div><div class="item-title">${esc(h.name)}</div><div class="note">${cityHTML(h.city)}${h.via ? " · " + esc(h.via) : ""}</div>
     <div class="row">${c ? `<span class="tag ok">Booked</span><button class="tag copy" data-copy="${esc(c)}">${esc(c)}</button>` : `<span class="tag todo">No conf. #</span>`}<button class="tag" data-taxi="${k}">Taxi card</button></div></div></li>`; }).join("");
   $("#bk").innerHTML =
     `<div class="segs" id="bkf">${CATS.map(([v, l]) => `<button data-bkf="${v}" class="${bkFilter === v ? "on" : ""}">${l}</button>`).join("")}</div>`
     + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${jaLine(it.ja)}${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>` : "")
-    + (groups.length ? `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${esc(g.d.city)}</span></div>
+    + (groups.length ? `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${cityHTML(g.d.city)}</span></div>
       <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${jaLine(it.ja)}${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>`).join("") : "")
     + (showHotels ? `<h2>Hotels</h2><div class="card"><ul class="tl">${hotelRows}</ul></div>` : "")
     + (!groups.length && !showHotels ? `<div class="card sub">Nothing in this category yet.</div>` : "")
@@ -482,7 +485,7 @@ function renderBookings() {
 
 function renderHotels() {
   $("#ht").innerHTML = Object.entries(HOTELS).map(([k, h]) => `<div class="card">
-    <div class="dayhead"><h3>${esc(h.name)}</h3><span class="sub">${esc(h.city)}</span></div>${jaLine(h.jp)}
+    <div class="dayhead"><h3>${esc(h.name)}</h3><span class="sub">${cityHTML(h.city)}</span></div>${jaLine(h.jp)}
     <div class="note">${esc(h.dates)}</div>
     <dl class="kv"><dt>Times</dt><dd>${esc(h.times)}</dd>
       <dt>Address</dt><dd>${esc(h.addr)}<br><span class="jp">${esc(h.addrJp)}</span></dd>
