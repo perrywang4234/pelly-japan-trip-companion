@@ -246,7 +246,7 @@ async function attCall(body, ms = 60000) {
 // Upload this phone's new pictures, download the other phone's, drop pictures deleted elsewhere.
 async function attPump() {
   if (ATT.busy || !ATT.ready || !cfg.url || !navigator.onLine) return;
-  ATT.busy = true; let changed = false;
+  ATT.busy = true; let changed = false; const hadErr = ATT.err; ATT.err = "";
   try {
     for (const [id, h] of [...ATT.have]) {
       const e = S["att:" + id];
@@ -254,21 +254,22 @@ async function attPump() {
       if (h.up || !e) continue;
       const r = await IDB.get(id); if (!r) { ATT.have.delete(id); continue; }
       const j = await attCall({ action: "upload", id, data: b64(r.buf) });
-      if (!j.ok) throw new Error(j.error || "upload failed");
+      if (!j.ok || j.id !== id) throw new Error(j.error || "sync script not updated for attachments yet");   // an older script answers ok without storing
       r.up = true; await IDB.put(id, r); h.up = true; changed = true;
     }
     for (const a of collection("att:")) {
       const id = attId(a.key);
       if (ATT.have.has(id) || Date.now() - (ATT.miss.get(id) || 0) < 120000) continue;
       const j = await attCall({ action: "get", id });
-      if (!j.ok) { ATT.miss.set(id, Date.now()); if (j.missing) continue; throw new Error(j.error || "download failed"); }
+      if (!j.ok || !j.data) { ATT.miss.set(id, Date.now()); if (j.missing || (j.ok && !j.data)) continue; throw new Error(j.error || "download failed"); }
       await IDB.put(id, { id, buf: unb64(j.data), up: true }); ATT.have.set(id, { up: true }); changed = true;
     }
   } catch (e) {
+    ATT.err = e && e.message ? e.message : "couldn't reach the sheet"; changed = true;
     console.warn("attachments:", e);
   } finally {
     ATT.busy = false;
-    if (changed) renderAll(); else renderSync();
+    if (changed || hadErr !== ATT.err) renderAll(); else renderSync();
   }
 }
 
@@ -509,7 +510,7 @@ function renderMore() {
 }
 function attLine() {
   const c = attCounts(); if (!c.local && !c.down && !c.up) return "";
-  return `<dt>Tickets</dt><dd>${c.local} saved on this phone${c.down ? ` · <b>${c.down} still to download</b>` : ""}${c.up ? ` · ${c.up} to upload` : ""}</dd>`;
+  return `<dt>Tickets</dt><dd>${c.local} saved on this phone${c.down ? ` · <b>${c.down} still to download</b>` : ""}${c.up ? ` · ${c.up} to upload` : ""}${ATT.err ? `<br><span class="sub">Upload problem: ${esc(ATT.err)}</span>` : ""}</dd>`;
 }
 function connectForm() {
   return `<label class="lbl">Setup code<textarea id="c-code" rows="2" placeholder="Paste the setup code"></textarea></label>
