@@ -43,7 +43,7 @@ async function sync() {
       if (!cur || row.ts >= cur.ts) S[row.k] = { v: row.v, ts: Number(row.ts) || 0, by: row.by || "", del: !!row.del };
     });
     lastSync = Date.now(); syncErr = ""; LS.set("tc.last", lastSync); persist();
-    syncing = false; renderAll();
+    syncing = false; renderAll(); attPump();
     return true;
   } catch (e) {
     syncErr = e.name === "AbortError" ? "timed out" : (e.message || "couldn't reach the sheet");
@@ -182,6 +182,144 @@ function collection(prefix) {
     .sort((a, b) => (b.created || b.ts) - (a.created || a.ts));
 }
 
+// ---------- attachments (ticket photos, PDF pages) ----------
+// Row att:<id> = JSON {item, n, w, h, name, created} syncs like everything else. The JPEG itself is kept in
+// IndexedDB on each phone (so it opens offline) and in a private Drive folder via the sync script.
+const IDB = (() => {
+  let dbp;
+  const open = () => dbp || (dbp = new Promise((res, rej) => {
+    const r = indexedDB.open("tc", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("att");
+    r.onsuccess = () => res(r.result); r.onerror = () => { dbp = null; rej(r.error); };
+  }));
+  const run = (mode, fn) => open().then(db => new Promise((res, rej) => {
+    const tx = db.transaction("att", mode), rq = fn(tx.objectStore("att"));
+    tx.oncomplete = () => res(rq && rq.result); tx.onerror = tx.onabort = () => rej(tx.error);
+  }));
+  return {
+    get: k => run("readonly", s => s.get(k)),
+    put: (k, v) => run("readwrite", s => s.put(v, k)),
+    del: k => run("readwrite", s => s.delete(k)),
+    all: () => run("readonly", s => s.getAll())
+  };
+})();
+const ATT = { have: new Map(), urls: new Map(), miss: new Map(), busy: false, ready: false };   // have: id -> {up}
+const attId = k => k.slice(4);
+function attsFor(item) {
+  return collection("att:").filter(a => a.item === item).map(a => Object.assign(a, { id: attId(a.key) }))
+    .sort((a, b) => (a.created || 0) - (b.created || 0) || (a.n || 0) - (b.n || 0));
+}
+async function attInit() {
+  try { (await IDB.all()).forEach(r => { if (r && r.id) ATT.have.set(r.id, { up: !!r.up }); }); } catch (e) {}
+  ATT.ready = true;
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+}
+async function attUrl(id) {
+  if (ATT.urls.has(id)) return ATT.urls.get(id);
+  let r; try { r = await IDB.get(id); } catch (e) { return ""; }
+  if (!r || !r.buf) return "";
+  const u = URL.createObjectURL(new Blob([r.buf], { type: "image/jpeg" }));
+  ATT.urls.set(id, u); return u;
+}
+// Fill in <img data-att="id"> elements once their picture is read from the phone's storage.
+function hydrate(root = document) {
+  root.querySelectorAll("img[data-att]:not([src])").forEach(img => attUrl(img.dataset.att).then(u => { if (u) img.src = u; }));
+}
+const attCounts = () => {
+  const rows = collection("att:");
+  return { local: rows.filter(a => ATT.have.has(attId(a.key))).length, down: rows.filter(a => !ATT.have.has(attId(a.key))).length,
+    up: [...ATT.have.values()].filter(h => !h.up).length };
+};
+function b64(buf) {
+  const u = new Uint8Array(buf); let s = "";
+  for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function unb64(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return u.buffer; }
+async function attCall(body, ms = 60000) {
+  const ctl = new AbortController(), to = setTimeout(() => ctl.abort(), ms);
+  try {
+    const r = await fetch(cfg.url, { method: "POST", body: JSON.stringify(Object.assign({ code: cfg.code }, body)), signal: ctl.signal });
+    return await r.json();
+  } finally { clearTimeout(to); }
+}
+// Upload this phone's new pictures, download the other phone's, drop pictures deleted elsewhere.
+async function attPump() {
+  if (ATT.busy || !ATT.ready || !cfg.url || !navigator.onLine) return;
+  ATT.busy = true; let changed = false;
+  try {
+    for (const [id, h] of [...ATT.have]) {
+      const e = S["att:" + id];
+      if (e && e.del) { await IDB.del(id); ATT.have.delete(id); changed = true; continue; }
+      if (h.up || !e) continue;
+      const r = await IDB.get(id); if (!r) { ATT.have.delete(id); continue; }
+      const j = await attCall({ action: "upload", id, data: b64(r.buf) });
+      if (!j.ok) throw new Error(j.error || "upload failed");
+      r.up = true; await IDB.put(id, r); h.up = true; changed = true;
+    }
+    for (const a of collection("att:")) {
+      const id = attId(a.key);
+      if (ATT.have.has(id) || Date.now() - (ATT.miss.get(id) || 0) < 120000) continue;
+      const j = await attCall({ action: "get", id });
+      if (!j.ok) { ATT.miss.set(id, Date.now()); if (j.missing) continue; throw new Error(j.error || "download failed"); }
+      await IDB.put(id, { id, buf: unb64(j.data), up: true }); ATT.have.set(id, { up: true }); changed = true;
+    }
+  } catch (e) {
+    console.warn("attachments:", e);
+  } finally {
+    ATT.busy = false;
+    if (changed) renderAll(); else renderSync();
+  }
+}
+
+// Photos are shrunk to a sharp-screenshot size; PDF pages are drawn to the same kind of JPEG.
+const ATT_MAX = 1800;
+function canvasJpeg(src, w, h) {
+  const s = Math.min(1, ATT_MAX / Math.max(w, h));
+  const c = document.createElement("canvas"); c.width = Math.max(1, Math.round(w * s)); c.height = Math.max(1, Math.round(h * s));
+  const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height); g.drawImage(src, 0, 0, c.width, c.height);
+  return new Promise((res, rej) => c.toBlob(b => b ? res({ blob: b, w: c.width, h: c.height }) : rej(new Error("couldn't save the picture")), "image/jpeg", 0.85));
+}
+async function imageToJpeg(file) {
+  const u = URL.createObjectURL(file);
+  try {
+    const img = new Image(); img.src = u;
+    await (img.decode ? img.decode() : new Promise((res, rej) => { img.onload = res; img.onerror = rej; }));
+    return await canvasJpeg(img, img.naturalWidth, img.naturalHeight);
+  } finally { URL.revokeObjectURL(u); }
+}
+let pdfLib = null;
+function loadPdf() {
+  return pdfLib || (pdfLib = new Promise((res, rej) => {
+    const s = document.createElement("script"); s.src = "vendor/pdfjs/pdf.min.js";
+    s.onload = () => { const L = window.pdfjsLib; if (!L) { pdfLib = null; rej(new Error("PDF reader didn't load")); return; } L.GlobalWorkerOptions.workerSrc = "vendor/pdfjs/pdf.worker.min.js"; res(L); };
+    s.onerror = () => { pdfLib = null; s.remove(); rej(new Error("PDF reader didn't load (needs signal the first time)")); };
+    document.head.appendChild(s);
+  }));
+}
+const PDF_MAX_PAGES = 12;
+async function pdfToJpegs(file) {
+  const L = await loadPdf();
+  const doc = await L.getDocument({ data: new Uint8Array(await file.arrayBuffer()), isEvalSupported: false,
+    // absolute URLs: pdf.js resolves these from its worker's location, not the page's
+    cMapUrl: new URL("vendor/pdfjs/cmaps/", location.href).href, cMapPacked: true,
+    standardFontDataUrl: new URL("vendor/pdfjs/standard_fonts/", location.href).href }).promise;
+  const out = [];
+  try {
+    for (let i = 1; i <= Math.min(doc.numPages, PDF_MAX_PAGES); i++) {
+      const pg = await doc.getPage(i), v1 = pg.getViewport({ scale: 1 });
+      const vp = pg.getViewport({ scale: Math.min(4, ATT_MAX / Math.max(v1.width, v1.height)) });
+      const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+      const g = c.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, c.width, c.height);
+      await pg.render({ canvasContext: g, viewport: vp }).promise;
+      out.push(await canvasJpeg(c, c.width, c.height));
+      pg.cleanup();
+    }
+    if (doc.numPages > PDF_MAX_PAGES) toast(`Kept the first ${PDF_MAX_PAGES} of ${doc.numPages} pages`);
+  } finally { doc.destroy(); }
+  return out;
+}
+
 // Category for the Bookings filter. Base items carry `cat`; for items added on a phone without one, guess from the title.
 const CATS = [["all", "All"], ["travel", "Travel"], ["food", "Food"], ["hotel", "Hotel"]];
 function catOf(it) {
@@ -219,7 +357,7 @@ function openGuide(id) {
 function renderSync() {
   const el = $("#sync"); if (!el) return;
   let cls = "", txt;
-  const pending = dirty.size;
+  const pending = dirty.size + [...ATT.have.values()].filter(h => !h.up).length;
   if (!cfg.url) { cls = "warn"; txt = "Not connected · edits stay on this phone"; }
   else if (syncing) { txt = "Syncing…"; }
   else if (!navigator.onLine) { cls = "warn"; txt = `Offline${pending ? ` · ${pending} change${pending > 1 ? "s" : ""} waiting` : ""}`; }
@@ -240,6 +378,13 @@ function tags(it) {
   if (it.taxi) h += `<button class="tag" data-taxi="${it.taxi}">Taxi card</button>`;
   if (it.qr && qrs(it.qr).length) h += `<button class="tag" data-qr="${esc(it.qr)}">QR codes</button>`;
   return h ? `<div class="row">${h}</div>` : "";
+}
+
+function attStrip(id) {
+  const list = attsFor(id); if (!list.length) return "";
+  return `<div class="thumbs">${list.slice(0, 4).map(a => ATT.have.has(a.id)
+      ? `<button class="thumb" data-view="${esc(id)}" data-vat="${esc(a.id)}" aria-label="Open ticket"><img data-att="${esc(a.id)}" alt=""></button>`
+      : `<button class="thumb wait" data-view="${esc(id)}" data-vat="${esc(a.id)}" aria-label="Not downloaded yet">⇣</button>`).join("")}${list.length > 4 ? `<button class="thumb more" data-view="${esc(id)}">+${list.length - 4}</button>` : ""}</div>`;
 }
 
 function renderStrip() {
@@ -276,7 +421,7 @@ function renderDay() {
   ${GUIDES.filter(g => g.date === d.date).map(guideHTML).join("")}
   <div class="card"><ul class="tl">${items.map(it => `<li class="${it.key ? "key" : ""}" data-edit="${it.id}">
     <div class="time">${esc(it.t || "")}</div>
-    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${it.note ? `<div class="note">${esc(it.note)}</div>` : ""}${goBlock(it)}${tags(it)}
+    <div><div class="item-title">${esc(it.title || "(untitled)")}</div>${it.note ? `<div class="note">${esc(it.note)}</div>` : ""}${goBlock(it)}${tags(it)}${attStrip(it.id)}
     ${it.editedBy ? `<div class="by">edited by ${esc(it.editedBy)} · ${ago(it.editedAt)}</div>` : ""}</div></li>`).join("")}</ul>
     <button class="btn wide" data-add="${d.date}">+ Add to this day</button></div>
   <div class="card"><h3>Notes for ${esc(fmt(d.date, { month: "short", day: "numeric" }))}</h3>
@@ -295,9 +440,9 @@ function renderBookings() {
     <div class="row">${c ? `<span class="tag ok">Booked</span><button class="tag copy" data-copy="${esc(c)}">${esc(c)}</button>` : `<span class="tag todo">No conf. #</span>`}<button class="tag" data-taxi="${k}">Taxi card</button></div></div></li>`; }).join("");
   $("#bk").innerHTML =
     `<div class="segs" id="bkf">${CATS.map(([v, l]) => `<button data-bkf="${v}" class="${bkFilter === v ? "on" : ""}">${l}</button>`).join("")}</div>`
-    + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>` : "")
+    + (todo.length ? `<h2>Still to book or do</h2><div class="card"><ul class="tl">${todo.map(({ it, d }) => `<li data-edit="${it.id}"><div class="time">${short(d.date)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>` : "")
     + (groups.length ? `<h2>By day</h2>` + groups.map(g => `<div class="card"><div class="dayhead"><h3>${fmt(g.d.date, { weekday: "short", month: "short", day: "numeric" })}</h3><span class="sub">${esc(g.d.city)}</span></div>
-      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}</div></li>`).join("")}</ul></div>`).join("") : "")
+      <ul class="tl">${g.items.map(it => `<li data-edit="${it.id}"><div class="time">${esc(it.t)}</div><div><div class="item-title">${esc(it.title)}</div>${tags(it)}${attStrip(it.id)}</div></li>`).join("")}</ul></div>`).join("") : "")
     + (showHotels ? `<h2>Hotels</h2><div class="card"><ul class="tl">${hotelRows}</ul></div>` : "")
     + (!groups.length && !showHotels ? `<div class="card sub">Nothing in this category yet.</div>` : "")
     + (bkFilter === "all" || bkFilter === "travel" ? `<h2>Book online</h2><div class="card"><div class="row" style="margin:0">${PLATFORMS.map(p => `<a class="tag link" href="${esc(p[1])}" target="_blank" rel="noopener">${esc(p[0])}</a>`).join("")}</div></div>` : "");
@@ -357,10 +502,14 @@ function renderMore() {
   $("#guides-toggle").textContent = allOpen ? "Fold all" : "Unfold all";
   $("#guides").innerHTML = GUIDES.map(g => g.date ? Object.assign({}, g, { title: `${fmt(g.date, { month: "short", day: "numeric" })} · ${g.title}` }) : g).map(guideHTML).join("");
   $("#todo").innerHTML = TODO.map(([id, t]) => { const on = val("td:" + id) === "1"; return `<li class="${on ? "done" : ""}"><input type="checkbox" id="td-${id}" data-td="${id}" ${on ? "checked" : ""}><label for="td-${id}"><span>${esc(t)}</span></label></li>`; }).join("");
-  $("#conn").innerHTML = cfg.url ? `<dl class="kv" style="margin:0"><dt>You are</dt><dd>${esc(cfg.name || "—")}</dd><dt>Status</dt><dd id="sync2"></dd><dt>Last sync</dt><dd>${ago(lastSync)}</dd></dl>
+  $("#conn").innerHTML = cfg.url ? `<dl class="kv" style="margin:0"><dt>You are</dt><dd>${esc(cfg.name || "—")}</dd><dt>Status</dt><dd id="sync2"></dd><dt>Last sync</dt><dd>${ago(lastSync)}</dd>${attLine()}</dl>
       <div class="row"><button class="btn primary" data-syncnow>Sync now</button><button class="btn" data-share>Setup code for the other phone</button><button class="btn" data-disconnect>Disconnect</button></div>`
     : `<p class="sub" style="margin-top:0">Paste the setup code (or the web-app URL and passcode) to sync with the Google Sheet and the other phone.</p>${connectForm()}`;
   const s2 = $("#sync2"); if (s2) s2.textContent = $("#sync").textContent;
+}
+function attLine() {
+  const c = attCounts(); if (!c.local && !c.down && !c.up) return "";
+  return `<dt>Tickets</dt><dd>${c.local} saved on this phone${c.down ? ` · <b>${c.down} still to download</b>` : ""}${c.up ? ` · ${c.up} to upload` : ""}</dd>`;
 }
 function connectForm() {
   return `<label class="lbl">Setup code<textarea id="c-code" rows="2" placeholder="Paste the setup code"></textarea></label>
@@ -380,6 +529,7 @@ function renderAll() {
   if (view === "hotels") renderHotels();
   if (view === "log") renderLog();
   if (view === "more") renderMore();
+  hydrate();
 }
 
 const VIEWS = { days: "Days", book: "Bookings", hotels: "Hotels", log: "Log", more: "More" };
@@ -402,7 +552,60 @@ function openSheet(html, onSave, onDelete) {
   del.onclick = () => { if (del.dataset.armed) { onDelete(); closeSheet(); } else { del.dataset.armed = "1"; del.textContent = "Tap again to delete"; } };
   const first = $("#sheet-body input, #sheet-body textarea"); if (first && !("ontouchstart" in window)) first.focus();
 }
-function closeSheet() { $("#sheet").classList.remove("on"); }
+function closeSheet() {
+  $("#sheet").classList.remove("on");
+  if (EA) { EA.add.forEach(a => URL.revokeObjectURL(a.url)); EA = null; }
+}
+// Attachments being edited in the open item editor: staged until Save.
+let EA = null;   // {item, add:[{tid, blob, url, w, h, n, name}], del:Set, busy}
+function renderEA() {
+  const box = $("#e-atts"); if (!box || !EA) return;
+  const ex = EA.item ? attsFor(EA.item).filter(a => !EA.del.has(a.id)) : [];
+  box.innerHTML = ex.map(a => `<div class="thumb">${ATT.have.has(a.id) ? `<img data-att="${esc(a.id)}" alt="">` : "⇣"}<button class="x" data-attdel="${esc(a.id)}" aria-label="Remove">✕</button></div>`).join("")
+    + EA.add.map(a => `<div class="thumb"><img src="${a.url}" alt=""><button class="x" data-attdel="${a.tid}" aria-label="Remove">✕</button></div>`).join("")
+    + (EA.busy ? `<div class="thumb wait">Preparing…</div>` : "");
+  hydrate(box);
+}
+async function addFiles(files) {
+  const ea = EA; if (!ea || !files.length) return;
+  ea.busy++; renderEA();
+  for (const f of files) {
+    try {
+      const isPdf = f.type === "application/pdf" || /\.pdf$/i.test(f.name || "");
+      const pics = isPdf ? await pdfToJpegs(f) : [await imageToJpeg(f)];
+      pics.forEach((p, i) => ea.add.push(Object.assign(p, { tid: "tmp_" + uid(), name: f.name || "", n: i, url: URL.createObjectURL(p.blob) })));
+    } catch (e) { toast((f.name || "File") + ": " + (e && e.message ? e.message : "couldn't read it")); }
+  }
+  ea.busy--; if (EA === ea) renderEA(); else ea.add.forEach(a => URL.revokeObjectURL(a.url));
+}
+function saveAtts(ea, item) {
+  ea.del.forEach(id => { put("att:" + id, null); IDB.del(id).catch(() => {}); ATT.have.delete(id); const u = ATT.urls.get(id); if (u) { URL.revokeObjectURL(u); ATT.urls.delete(id); } });
+  if (!ea.add.length) return;
+  (async () => {
+    const base = Date.now();
+    for (let i = 0; i < ea.add.length; i++) {
+      const a = ea.add[i], id = "a" + uid();
+      try { await IDB.put(id, { id, buf: await a.blob.arrayBuffer(), up: false }); }
+      catch (e) { toast("Couldn't store a picture on this phone"); URL.revokeObjectURL(a.url); continue; }
+      ATT.have.set(id, { up: false }); ATT.urls.set(id, a.url);
+      put("att:" + id, JSON.stringify({ item, n: a.n, w: a.w, h: a.h, name: a.name, created: base + i }));
+    }
+    renderAll(); attPump();
+  })();
+}
+
+// ---------- full-screen viewer ----------
+function openViewer(item, at) {
+  const it = resolveItem(item, BASE[item]), list = attsFor(item);
+  if (!list.length) return;
+  $("#vw-t").textContent = it.title || "Tickets & photos";
+  $("#vw-list").innerHTML = list.map(a => ATT.have.has(a.id)
+    ? `<img data-att="${esc(a.id)}" id="vw-${esc(a.id)}" alt="" style="aspect-ratio:${+a.w || 3}/${+a.h || 4}">`
+    : `<div class="vw-miss" id="vw-${esc(a.id)}">This one isn't on this phone yet. It downloads the next time there's signal.</div>`).join("");
+  $("#vw").classList.add("on"); hydrate($("#vw"));
+  const el = at && document.getElementById("vw-" + at);
+  $("#vw-list").scrollTop = 0; if (el) el.scrollIntoView({ block: "start" });
+}
 const field = (id, label, value, opts = {}) => opts.area
   ? `<label class="lbl">${label}<textarea id="${id}" rows="${opts.rows || 3}" placeholder="${esc(opts.ph || "")}">${esc(value || "")}</textarea></label>`
   : `<label class="lbl">${label}<input id="${id}" value="${esc(value || "")}" placeholder="${esc(opts.ph || "")}" ${opts.type ? `type="${opts.type}"` : ""} ${opts.mode ? `inputmode="${opts.mode}"` : ""}></label>`;
@@ -422,8 +625,13 @@ function editItem(id, date) {
     <label class="lbl">Links: tickets, emails, files, apps</label>
     <div id="e-links">${(it.links || []).map(linkRow).join("")}</div>
     <div class="row"><button class="tag" data-linkadd>+ Add link</button><button class="tag" data-linkadd="wallet">+ Apple Wallet</button></div>
-    <p class="sub hint">Paste any link: a ticket PDF in Drive or iCloud, a confirmation email, a booking page. Links open when you have signal; keep a Wallet pass or screenshot as the offline backup.</p>`,
+    <p class="sub hint">Paste any link: a ticket PDF in Drive or iCloud, a confirmation email, a booking page. Links open when you have signal; keep a Wallet pass or screenshot as the offline backup.</p>
+    <label class="lbl">Tickets &amp; photos</label>
+    <div class="thumbs edit" id="e-atts"></div>
+    <div class="row"><label class="tag attach">+ Attach photo or PDF<input type="file" id="e-file" accept="image/*,application/pdf,.pdf" multiple></label></div>
+    <p class="sub hint">Saved on both phones and opens without signal. PDFs are turned into one picture per page.</p>`,
     () => {
+      if (EA && EA.busy) { toast("Still preparing the picture…"); return false; }
       const nid = id || "u" + uid();
       if (isNew) put("c:" + nid, date);
       const nv = { t: $("#e-t").value.trim(), title: $("#e-title").value.trim(), note: $("#e-note").value.trim(), go: $("#e-go").value.trim(), ref: $("#e-ref").value.trim(), st: $("#e-st .sel") ? $("#e-st .sel").dataset.st : "",
@@ -434,9 +642,11 @@ function editItem(id, date) {
         const u = cleanUrl(r.querySelector(".l-url").value); return u ? [r.querySelector(".l-lab").value.trim() || guessLabel(u), u] : null;
       }).filter(Boolean);
       if (JSON.stringify(links) !== JSON.stringify(it.links || [])) put(`f:${nid}:links`, JSON.stringify(links));
+      const ea = EA; EA = null; if (ea) saveAtts(ea, nid);
       renderAll(); toast("Saved");
     },
-    isNew ? null : () => { if (it.custom) put("c:" + id, null); else put(`f:${id}:hide`, "1"); renderAll(); toast("Deleted"); });
+    isNew ? null : () => { attsFor(id).forEach(a => put("att:" + a.id, null)); if (it.custom) put("c:" + id, null); else put(`f:${id}:hide`, "1"); renderAll(); toast("Deleted"); });
+  EA = { item: id || null, add: [], del: new Set(), busy: 0 }; renderEA();
 }
 function editHotel(k) {
   const h = HOTELS[k];
@@ -543,6 +753,13 @@ document.addEventListener("click", e => {
     if (la.dataset.linkadd !== "wallet") box.lastElementChild.querySelector(".l-url").focus();
     return;
   }
+  const vw = t.closest("[data-view]"); if (vw) { e.stopPropagation(); openViewer(vw.dataset.view, vw.dataset.vat); return; }
+  const ad2 = t.closest("[data-attdel]");
+  if (ad2 && EA) {
+    const k = ad2.dataset.attdel, i = EA.add.findIndex(a => a.tid === k);
+    if (i >= 0) { URL.revokeObjectURL(EA.add[i].url); EA.add.splice(i, 1); } else EA.del.add(k);
+    renderEA(); return;
+  }
   const ld = t.closest("[data-linkdel]"); if (ld) { ld.closest(".lrow").remove(); return; }
   const seg = t.closest(".seg .tag"); if (seg) { seg.parentElement.querySelectorAll(".tag").forEach(x => x.classList.toggle("sel", x === seg)); return; }
   const ed = t.closest("[data-edit]"); if (ed) { editItem(ed.dataset.edit); return; }
@@ -561,6 +778,7 @@ document.addEventListener("click", e => {
   if (t.closest("#sync")) { if (cfg.url) sync(); else show("more"); return; }
 });
 document.addEventListener("change", e => {
+  if (e.target.id === "e-file") { const fs = [...e.target.files]; e.target.value = ""; addFiles(fs); return; }
   const td = e.target.dataset && e.target.dataset.td;
   if (td) { put("td:" + td, e.target.checked ? "1" : "0"); e.target.closest("li").classList.toggle("done", e.target.checked); }
 });
@@ -584,6 +802,7 @@ $("#sheet-cancel").onclick = closeSheet;
 $("#sheet").addEventListener("click", e => { if (e.target.id === "sheet") closeSheet(); });
 $("#taxi-close").onclick = () => $("#taxi").classList.remove("on");
 $("#qr-close").onclick = () => $("#qr").classList.remove("on");
+$("#vw-close").onclick = () => $("#vw").classList.remove("on");
 
 // ---------- start ----------
 function pickDay() {
@@ -602,6 +821,7 @@ function pickDay() {
   const standalone = window.navigator.standalone || matchMedia("(display-mode: standalone)").matches;
   if (!standalone && /iPhone|iPad|iPod/.test(navigator.userAgent)) $("#install").style.display = "";
   sync();
+  attInit().then(() => { renderAll(); attPump(); });
   setInterval(renderSync, 30000);
   if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
 })();

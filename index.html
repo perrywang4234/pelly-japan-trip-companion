@@ -129,6 +129,25 @@ nav button.on{color:var(--red);font-weight:700}
 .toast{position:fixed;left:50%;bottom:calc(86px + env(safe-area-inset-bottom));transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 14px;border-radius:999px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:60;max-width:90vw}
 .toast.on{opacity:1}
 .foot{font-size:12px;color:var(--muted);margin:24px 0 8px}
+/* ticket photos & PDF pages */
+.thumbs{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.thumb{position:relative;width:58px;height:58px;border-radius:9px;border:1px solid var(--line);background:#fff;padding:0;overflow:hidden;display:flex;align-items:center;justify-content:center;font:inherit;font-size:12px;color:var(--muted);cursor:pointer}
+.thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.thumb.wait{background:var(--paper)}
+.thumb.more{background:var(--paper);font-weight:700;color:var(--ink)}
+.thumbs.edit .thumb{width:72px;height:72px;cursor:default}
+.thumbs.edit .thumb.wait{width:auto;padding:0 10px}
+.thumb .x{position:absolute;top:3px;right:3px;width:24px;height:24px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:12px;line-height:24px;padding:0;cursor:pointer}
+.tag.attach{position:relative;overflow:hidden;font-weight:600}
+.tag.attach input{position:absolute;inset:0;opacity:0;width:100%;height:100%;margin:0;padding:0;cursor:pointer}
+.vw{position:fixed;inset:0;background:#fff;color:#111;z-index:50;display:none;flex-direction:column}
+.vw.on{display:flex}
+.vw-t{font-weight:700;font-size:16px;padding:calc(12px + env(safe-area-inset-top)) 16px 4px;text-align:center}
+.vw-s{font-size:12px;color:#666;text-align:center;padding:0 16px 8px}
+.vw-list{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:0 8px}
+.vw-list img{display:block;width:100%;height:auto;margin:0 auto 10px;background:#fff;border:1px solid #e6e6e6;border-radius:6px}
+.vw-miss{margin:0 0 10px;padding:30px 16px;border:1px dashed #bbb;border-radius:8px;text-align:center;color:#555;font-size:14px}
+.vw .btn{margin:8px 16px calc(10px + env(safe-area-inset-bottom));padding:14px}
 /* getting there */
 .go{display:flex;gap:7px;align-items:flex-start;margin-top:6px;padding:6px 9px;border-radius:9px;background:var(--paper);border:1px solid var(--line);font-size:13.5px;line-height:1.4;white-space:pre-wrap}
 .go svg{width:15px;height:15px;flex:0 0 auto;margin-top:2px;color:var(--red)}
@@ -188,6 +207,11 @@ details.guide .row{padding:0 14px 14px;margin-top:0}
   <div class="qn" id="qr-n"></div>
   <div class="row" id="qr-who"></div>
   <button class="btn primary" id="qr-close">Close</button>
+</div>
+<div class="vw" id="vw" role="dialog" aria-modal="true">
+  <div class="vw-t" id="vw-t"></div><div class="vw-s">Turn up screen brightness if a gate or machine needs to scan it.</div>
+  <div class="vw-list" id="vw-list"></div>
+  <button class="btn primary" id="vw-close">Close</button>
 </div>
 <div class="toast" id="toast"></div>
 
